@@ -1,5 +1,4 @@
 import os
-import json
 import asyncio
 import requests
 from bs4 import BeautifulSoup
@@ -17,9 +16,9 @@ EMOJI_REWARD = "🎁"
 EMOJI_CODE = "🟩"
 EMOJI_EXPIRES = "⏰"
 
-# --- Scraper ---
 SHIFT_URL = "https://mentalmars.com/game-news/borderlands-4-shift-codes/"
 
+# --- Scraper ---
 def scrape_shift_codes():
     resp = requests.get(SHIFT_URL)
     resp.raise_for_status()
@@ -32,7 +31,7 @@ def scrape_shift_codes():
         if len(tds) < 3:
             continue
 
-        # Reward (all text in first TD)
+        # Reward
         reward_td = tds[0]
         reward = " ".join(reward_td.get_text(separator=" ").split()) or "Shift Code"
 
@@ -97,60 +96,58 @@ def delete_posted_code(code):
     conn.commit()
     conn.close()
 
-# --- Discord ---
-async def post_codes():
-    client = discord.Client(intents=discord.Intents.default())
+# --- Discord posting logic ---
+async def post_all_codes(channel):
+    posted_codes = load_posted_codes()
+    current_codes = scrape_shift_codes()
+    today = datetime.utcnow().date()
 
-    @client.event
-    async def on_ready():
-        print(f"Logged in as {client.user}")
-        channel = client.get_channel(CHANNEL_ID)
-        if not channel:
-            print("Channel not found")
-            await client.close()
-            return
+    # Delete expired codes
+    for code, info in posted_codes.items():
+        if info["expires"] and info["expires"] < today:
+            try:
+                msg = await channel.fetch_message(info["discord_msg_id"])
+                await msg.delete()
+            except Exception:
+                pass
+            delete_posted_code(code)
 
-        posted_codes = load_posted_codes()
-        current_codes = scrape_shift_codes()
+    # Post new codes
+    for code_entry in current_codes:
+        if code_entry["code"] in posted_codes:
+            continue
+        if code_entry["expires"] and code_entry["expires"] < today:
+            continue
 
-        # Delete expired codes
-        today = datetime.utcnow().date()
-        for code, info in posted_codes.items():
-            if info["expires"] and info["expires"] < today:
-                try:
-                    msg = await channel.fetch_message(info["discord_msg_id"])
-                    await msg.delete()
-                except Exception:
-                    pass
-                delete_posted_code(code)
+        reward_text = " ".join(code_entry['reward'].split())
+        message = (
+            f"{EMOJI_REWARD} **{reward_text}**\n"
+            f"{EMOJI_CODE} `{code_entry['code']}`\n"
+            f"{EMOJI_EXPIRES} Expires: {code_entry['expires_raw']}\n"
+            f"\u200b"  # extra spacing line
+        )
+        sent_msg = await channel.send(message)
+        save_posted_code(
+            code_entry["code"],
+            code_entry["reward"],
+            code_entry["expires"],
+            code_entry["expires_raw"],
+            sent_msg.id
+        )
 
-        # Post new codes
-        for code_entry in current_codes:
-            if code_entry["code"] in posted_codes:
-                continue
-            if code_entry["expires"] and code_entry["expires"] < today:
-                continue
-
-            reward_text = " ".join(code_entry['reward'].split())
-            message = (
-                f"{EMOJI_REWARD} **{reward_text}**\n"
-                f"{EMOJI_CODE} `{code_entry['code']}`\n"
-                f"{EMOJI_EXPIRES} Expires: {code_entry['expires_raw']}\n"
-                f"\u200b"  # extra line for spacing
-            )
-            sent_msg = await channel.send(message)
-            save_posted_code(
-                code_entry["code"],
-                code_entry["reward"],
-                code_entry["expires"],
-                code_entry["expires_raw"],
-                sent_msg.id
-            )
-
+# --- Main (cron-friendly) ---
+async def main():
+    intents = discord.Intents.default()
+    client = discord.Client(intents=intents)
+    await client.login(DISCORD_TOKEN)
+    channel = client.get_channel(CHANNEL_ID)
+    if not channel:
+        print("Channel not found")
         await client.close()
+        return
 
-    await client.start(DISCORD_TOKEN)
+    await post_all_codes(channel)
+    await client.close()
 
-# --- Run ---
 if __name__ == "__main__":
-    asyncio.run(post_codes())
+    asyncio.run(main())
