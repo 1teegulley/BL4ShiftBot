@@ -1,5 +1,4 @@
 import os
-import json
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
@@ -89,8 +88,9 @@ def fetch_shift_codes():
     codes = []
     for row in table_rows:
         code_elem = row.find("code")
-        date_elem = row.find_all("td")[1] if len(row.find_all("td")) > 1 else None
+        tds = row.find_all("td")
         reward_elem = row.find("strong")
+        date_elem = tds[1] if len(tds) > 1 else None
 
         if code_elem:
             code_text = code_elem.text.strip()
