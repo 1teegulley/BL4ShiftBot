@@ -134,20 +134,22 @@ async def send_discord_messages(codes_to_post, codes_to_delete, posted_codes):
 
         # Post new codes
         for code_entry in codes_to_post:
-            message = (
-                f"{EMOJI_REWARD} **{code_entry['reward']}**\n"
-                f"{EMOJI_CODE} `{code_entry['code']}`\n"
-                f"{EMOJI_EXPIRES} Expires: {code_entry['expires_raw']}\n"
-                f"\u200b"  # extra line at the end for spacing
-            )
-            sent_msg = await channel.send(message)
-            save_posted_code(
-                code_entry["code"],
-                code_entry["reward"],
-                code_entry["expires"],
-                code_entry["expires_raw"],
-                sent_msg.id
-            )
+    reward_text = " ".join(code_entry['reward'].split())
+    message = (
+        f"{EMOJI_REWARD} **{reward_text}**\n"
+        f"{EMOJI_CODE} `{code_entry['code']}`\n"
+        f"{EMOJI_EXPIRES} Expires: {code_entry['expires_raw']}\n"
+        f"\u200b"  # extra spacing line
+    )
+    sent_msg = await channel.send(message)
+    save_posted_code(
+        code_entry["code"],
+        code_entry["reward"],
+        code_entry["expires"],
+        code_entry["expires_raw"],
+        sent_msg.id
+    )
+
 
         await client.close()
 
