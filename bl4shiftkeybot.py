@@ -5,13 +5,7 @@ from bs4 import BeautifulSoup
 import discord
 import asyncio
 import psycopg2
-
-import os
-print("PGHOST =", os.getenv("PGHOST"))
-print("PGPORT =", os.getenv("PGPORT"))
-print("PGDATABASE =", os.getenv("PGDATABASE"))
-print("PGUSER =", os.getenv("PGUSER"))
-print("PGPASSWORD =", os.getenv("PGPASSWORD"))
+import psycopg2.extras
 
 # --- CONFIG ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -25,13 +19,10 @@ EMOJI_EXPIRES = "⏰"
 
 # --- DATABASE FUNCTIONS ---
 def get_db_connection():
-    return psycopg2.connect(
-        host=os.getenv("PGHOST"),
-        port=os.getenv("PGPORT"),
-        dbname=os.getenv("PGDATABASE"),
-        user=os.getenv("PGUSER"),
-        password=os.getenv("PGPASSWORD")
-    )
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise Exception("DATABASE_URL not set in environment")
+    return psycopg2.connect(database_url, cursor_factory=psycopg2.extras.RealDictCursor)
 
 def load_posted_codes():
     conn = get_db_connection()
@@ -51,13 +42,7 @@ def load_posted_codes():
     rows = cur.fetchall()
     posted = {}
     for row in rows:
-        code, reward, expires, expires_raw, msg_id = row
-        posted[code] = {
-            "reward": reward,
-            "expires": expires,
-            "expires_raw": expires_raw,
-            "msg_id": msg_id
-        }
+        posted[row["code"]] = row
     cur.close()
     conn.close()
     return posted
