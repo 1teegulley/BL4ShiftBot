@@ -6,6 +6,7 @@ import discord
 import asyncio
 import psycopg2
 import psycopg2.extras
+from dateutil import parser
 
 # --- CONFIG ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -91,7 +92,7 @@ def fetch_shift_codes():
 
             # Parse expiration date
             try:
-                expiration_date = datetime.strptime(expiration_text, "%b %d, %Y").date()
+                expiration_date = parser.parse(expiration_text).date()
             except:
                 expiration_date = None
 
@@ -103,10 +104,15 @@ def fetch_shift_codes():
             })
     return codes
 
-def is_code_expired(code_entry):
-    if code_entry["expires"] is None:
-        return False
-    return code_entry["expires"] < datetime.today().date()
+def is_code_expired(entry):
+    if entry["expires"]:
+        return entry["expires"] < datetime.today().date()
+    else:
+        try:
+            parsed_date = parser.parse(entry["expires_raw"]).date()
+            return parsed_date < datetime.today().date()
+        except:
+            return False
 
 # --- DISCORD FUNCTIONS ---
 async def send_discord_messages(codes_to_post, codes_to_delete, posted_codes):
@@ -155,7 +161,7 @@ if __name__ == "__main__":
     codes_to_delete = {
         code: info
         for code, info in posted_codes.items()
-        if info.get("expires") and info["expires"] < datetime.today().date()
+        if is_code_expired(info)
     }
 
     # Determine new codes to post
