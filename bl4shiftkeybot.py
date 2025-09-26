@@ -1,139 +1,109 @@
+import json
 import os
 import requests
+from datetime import datetime
 from bs4 import BeautifulSoup
 import discord
-import asyncio
-import json
-from datetime import datetime, timedelta
 
-# ====== CONFIG ======
-TOKEN = os.getenv("DISCORD_TOKEN")         # Set in Railway environment
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))  # Set in Railway environment
-URL = "https://mentalmars.com/game-news/borderlands-4-shift-codes/"
-DATA_FILE = "codes.json"
+# --- CONFIG ---
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+CODE_JSON_FILE = "posted_codes.json"
+SHIFT_CODE_URL = "https://mentalmars.com/game-news/borderlands-4-shift-codes/"
 
-# ====== SCRAPER ======
-def scrape_codes():
-    try:
-        response = requests.get(URL)
-        soup = BeautifulSoup(response.text, "html.parser")
-        codes = []
+# --- FUNCTIONS ---
 
-        rows = soup.find_all("tr")
-        for row in rows:
-            cells = row.find_all("td")
-            if len(cells) >= 3:
-                description = cells[0].get_text(strip=True)
-                expires = cells[1].get_text(strip=True)
-                code_el = cells[2].find("code")
-                if code_el:
-                    codes.append({
-                        "description": description,
-                        "expires": expires,
-                        "code": code_el.get_text(strip=True)
-                    })
-        return codes
-    except Exception as e:
-        print(f"[ERROR] Scraper failed: {e}")
-        return []
+def load_posted_codes():
+    if os.path.exists(CODE_JSON_FILE):
+        with open(CODE_JSON_FILE, "r") as f:
+            return json.load(f)
+    return {}
 
-# ====== EXPIRATION CHECK ======
-def is_expired(expire_str: str) -> bool:
-    if expire_str.lower() in ["unknown", "ongoing", "never"]:
-        return False
-    expire_str = expire_str.replace("Sept", "Sep")
-    try:
-        expire_date = datetime.strptime(expire_str, "%b %d, %Y")
-        return expire_date < datetime.now()
-    except Exception:
-        return False
+def save_posted_codes(posted_codes):
+    with open(CODE_JSON_FILE, "w") as f:
+        json.dump(posted_codes, f, indent=2)
 
-# ====== LOAD/SAVE JSON ======
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return []
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
+def fetch_shift_codes():
+    resp = requests.get(SHIFT_CODE_URL)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    table_rows = soup.find_all("tr")
+    codes = []
+    for row in table_rows:
+        code_elem = row.find("code")
+        date_elem = row.find_all("td")[1] if len(row.find_all("td")) > 1 else None
 
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-# ====== DISCORD BOT ======
-intents = discord.Intents.default()
-intents.messages = True
-intents.message_content = True
-client = discord.Client(intents=intents)
-
-# ====== MAIN SYNC FUNCTION ======
-async def run_shift_sync():
-    channel = client.get_channel(CHANNEL_ID)
-    if channel is None:
-        print(f"[ERROR] Channel not found: {CHANNEL_ID}")
-        return
-
-    stored = load_data()
-    stored_codes = {e["code"]: e for e in stored}
-
-    # Delete expired messages
-    for entry in stored:
-        if is_expired(entry["expires"]):
+        if code_elem:
+            code_text = code_elem.text.strip()
+            expiration_text = date_elem.text.strip() if date_elem else "Unknown"
+            # Parse expiration date
             try:
-                msg = await channel.fetch_message(entry["message_id"])
+                expiration_date = datetime.strptime(expiration_text, "%b %d, %Y").date()
+            except:
+                expiration_date = None
+            codes.append({
+                "code": code_text,
+                "expires": expiration_date,
+                "expires_raw": expiration_text
+            })
+    return codes
+
+def is_code_expired(code_entry):
+    if code_entry["expires"] is None:
+        return False
+    return code_entry["expires"] < datetime.today().date()
+
+async def send_discord_messages(codes_to_post, codes_to_delete):
+    intents = discord.Intents.default()
+    client = discord.Client(intents=intents)
+
+    @client.event
+    async def on_ready():
+        channel = client.get_channel(CHANNEL_ID)
+
+        # Delete expired messages
+        for msg_id in codes_to_delete.values():
+            try:
+                msg = await channel.fetch_message(msg_id)
                 await msg.delete()
-                print(f"[INFO] Deleted expired code: {entry['code']}")
-            except Exception as e:
-                print(f"[WARN] Could not delete message {entry['code']}: {e}")
+            except:
+                pass
 
-    stored = [e for e in stored if not is_expired(e["expires"])]
-
-    # Scrape site
-    codes = scrape_codes()
-    for entry in codes:
-        if is_expired(entry["expires"]):
-            continue
-        if entry["code"] not in stored_codes:
-            msg_text = (
-                f"**{entry['description']}**\n"
-                f"🗓️ Expires: {entry['expires']}\n"
-                f"🔑 Code: `{entry['code']}`"
+        # Post new codes
+        for code_entry in codes_to_post:
+            message = (
+                f"**{code_entry.get('reward','Shift Code')}**\n"
+                f"`{code_entry['code']}`\n"
+                f"Expires: {code_entry['expires_raw']}"
             )
-            try:
-                msg = await channel.send(msg_text)
-                print(f"[INFO] Posted new code: {entry['code']}")
-                stored.append({
-                    "code": entry["code"],
-                    "expires": entry["expires"],
-                    "message_id": msg.id
-                })
-            except Exception as e:
-                print(f"[ERROR] Failed to post {entry['code']}: {e}")
+            sent_msg = await channel.send(message)
+            code_entry["msg_id"] = sent_msg.id
 
-    save_data(stored)
-    print(f"[INFO] Sync complete at {datetime.now()}")
+        # Save updated posted codes
+        save_posted_codes(posted_codes)
+        await client.close()
 
-# ====== HOURLY SCHEDULER ======
-async def hourly_scheduler():
-    await client.wait_until_ready()
-    while not client.is_closed():
-        now = datetime.now()
-        # Next run is at HH:01
-        next_run = now.replace(minute=1, second=0, microsecond=0)
-        if next_run <= now:
-            next_run += timedelta(hours=1)
-        wait_seconds = (next_run - now).total_seconds()
-        print(f"[INFO] Waiting {wait_seconds:.0f}s until next check at {next_run}")
-        await asyncio.sleep(wait_seconds)
+    await client.start(DISCORD_TOKEN)
 
-        # Run main sync
-        try:
-            await run_shift_sync()
-        except Exception as e:
-            print(f"[ERROR] Exception during sync: {e}")
+# --- MAIN LOGIC ---
 
-@client.event
-async def on_ready():
-    print(f"[INFO] Logged in as {client.user} (ID: {client.user.id})")
-    client.loop.create_task(hourly_scheduler())
+if __name__ == "__main__":
+    posted_codes = load_posted_codes()
+    current_codes = fetch_shift_codes()
 
-client.run(TOKEN)
+    # Determine expired codes (to delete from Discord)
+    codes_to_delete = {}
+    for code, entry in posted_codes.items():
+        if is_code_expired(entry):
+            codes_to_delete[code] = entry.get("msg_id")
+    
+    # Filter out expired codes and already posted codes
+    codes_to_post = []
+    for code_entry in current_codes:
+        code_text = code_entry["code"]
+        if code_text not in posted_codes and not is_code_expired(code_entry):
+            codes_to_post.append(code_entry)
+            posted_codes[code_text] = code_entry  # Add to JSON record
+
+    import asyncio
+    asyncio.run(send_discord_messages(codes_to_post, codes_to_delete))
