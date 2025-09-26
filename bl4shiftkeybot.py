@@ -6,6 +6,13 @@ import discord
 import asyncio
 import psycopg2
 
+import os
+print("PGHOST =", os.getenv("PGHOST"))
+print("PGPORT =", os.getenv("PGPORT"))
+print("PGDATABASE =", os.getenv("PGDATABASE"))
+print("PGUSER =", os.getenv("PGUSER"))
+print("PGPASSWORD =", os.getenv("PGPASSWORD"))
+
 # --- CONFIG ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
