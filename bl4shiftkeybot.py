@@ -121,7 +121,7 @@ async def post_all_codes(channel):
             f"{EMOJI_REWARD} **{reward_text}**\n"
             f"{EMOJI_CODE} `{code_entry['code']}`\n"
             f"{EMOJI_EXPIRES} Expires: {code_entry['expires_raw']}\n"
-            f"\u200b"  # extra spacing line
+            f"\u200b"
         )
         sent_msg = await channel.send(message)
         save_posted_code(
@@ -132,14 +132,14 @@ async def post_all_codes(channel):
             sent_msg.id
         )
 
-# --- Main (cron-friendly) ---
+# --- Main (single-run) ---
 async def main():
     intents = discord.Intents.default()
-    client = discord.Client(intents=intents)
-    await client.login(DISCORD_TOKEN)
-    channel = await client.fetch_channel(CHANNEL_ID)
+    bot = discord.Bot(intents=intents)
+    await bot.login(DISCORD_TOKEN)
+    channel = await bot.fetch_channel(CHANNEL_ID)
     await post_all_codes(channel)
-    await client.close()  # clean exit
+    await bot.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
