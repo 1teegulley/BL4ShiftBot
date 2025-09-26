@@ -31,18 +31,15 @@ def scrape_shift_codes():
         if len(tds) < 3:
             continue
 
-        # Reward
         reward_td = tds[0]
         reward = " ".join(reward_td.get_text(separator=" ").split()) or "Shift Code"
 
-        # Expiration
         expires_raw = tds[1].get_text(strip=True)
         try:
             expires = parser.parse(expires_raw).date()
         except (ValueError, TypeError):
             expires = None
 
-        # Code
         code_elem = tds[2].find("code")
         if not code_elem:
             continue
@@ -138,11 +135,11 @@ async def post_all_codes(channel):
 # --- Main (cron-friendly) ---
 async def main():
     intents = discord.Intents.default()
-    bot = discord.Bot(intents=intents)
-    await bot.login(DISCORD_TOKEN)
-    channel = await bot.fetch_channel(CHANNEL_ID)
+    client = discord.Client(intents=intents)
+    await client.login(DISCORD_TOKEN)
+    channel = await client.fetch_channel(CHANNEL_ID)
     await post_all_codes(channel)
-    await bot.close()  # clean exit
+    await client.close()  # clean exit
 
 if __name__ == "__main__":
     asyncio.run(main())
