@@ -88,7 +88,7 @@ def fetch_shift_codes():
         if code_elem:
             code_text = code_elem.text.strip()
             expiration_text = date_elem.text.strip() if date_elem else "Unknown"
-            reward = reward_elem.text.strip() if reward_elem else "Shift Code"
+            reward = " ".join(reward_elem.text.strip().splitlines()) if reward_elem else "Unknown Reward"
 
             # Parse expiration date
             try:
@@ -137,7 +137,8 @@ async def send_discord_messages(codes_to_post, codes_to_delete, posted_codes):
             message = (
                 f"{EMOJI_REWARD} **{code_entry['reward']}**\n"
                 f"{EMOJI_CODE} `{code_entry['code']}`\n"
-                f"{EMOJI_EXPIRES} Expires: {code_entry['expires_raw']}\n\n"
+                f"{EMOJI_EXPIRES} Expires: {code_entry['expires_raw']}\n"
+                f"\u200b"  # extra line at the end for spacing
             )
             sent_msg = await channel.send(message)
             save_posted_code(
