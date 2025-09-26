@@ -5,38 +5,80 @@ import requests
 from bs4 import BeautifulSoup
 import discord
 import asyncio
-import subprocess
-import shlex
+import psycopg2
 
 # --- CONFIG ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 SHIFT_CODE_URL = "https://mentalmars.com/game-news/borderlands-4-shift-codes/"
-KV_ENV_VAR = "POSTED_CODES"
-RAILWAY_PROJECT_ID = os.getenv("RAILWAY_PROJECT_ID")  # Must be set in Railway env
-RAILWAY_TOKEN = os.getenv("RAILWAY_TOKEN")            # Must be set in Railway env
 
 # --- EMOJIS ---
 EMOJI_REWARD = "🎁"
 EMOJI_CODE = "🔑"
 EMOJI_EXPIRES = "⏰"
 
-# --- KV FUNCTIONS ---
-def load_posted_codes():
-    data = os.getenv(KV_ENV_VAR, "{}")
-    try:
-        return json.loads(data)
-    except:
-        return {}
+# --- DATABASE FUNCTIONS ---
+def get_db_connection():
+    return psycopg2.connect(
+        host=os.getenv("PGHOST"),
+        port=os.getenv("PGPORT"),
+        dbname=os.getenv("PGDATABASE"),
+        user=os.getenv("PGUSER"),
+        password=os.getenv("PGPASSWORD")
+    )
 
-def save_posted_codes(posted_codes):
-    """Automatically update Railway environment variable"""
-    json_data = json.dumps(posted_codes)
-    cmd = f'railway env set {KV_ENV_VAR} "{json_data}" --project {RAILWAY_PROJECT_ID}'
-    # Run Railway CLI with token from environment
-    env = os.environ.copy()
-    env["RAILWAY_TOKEN"] = RAILWAY_TOKEN
-    subprocess.run(shlex.split(cmd), env=env)
+def load_posted_codes():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS posted_codes (
+            code TEXT PRIMARY KEY,
+            reward TEXT,
+            expires DATE,
+            expires_raw TEXT,
+            msg_id BIGINT
+        )
+    """)
+    conn.commit()
+
+    cur.execute("SELECT code, reward, expires, expires_raw, msg_id FROM posted_codes")
+    rows = cur.fetchall()
+    posted = {}
+    for row in rows:
+        code, reward, expires, expires_raw, msg_id = row
+        posted[code] = {
+            "reward": reward,
+            "expires": expires,
+            "expires_raw": expires_raw,
+            "msg_id": msg_id
+        }
+    cur.close()
+    conn.close()
+    return posted
+
+def save_posted_code(code, reward, expires, expires_raw, msg_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO posted_codes (code, reward, expires, expires_raw, msg_id)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (code) DO UPDATE SET
+            reward = EXCLUDED.reward,
+            expires = EXCLUDED.expires,
+            expires_raw = EXCLUDED.expires_raw,
+            msg_id = EXCLUDED.msg_id
+    """, (code, reward, expires, expires_raw, msg_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def delete_posted_code(code):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM posted_codes WHERE code = %s", (code,))
+    conn.commit()
+    cur.close()
+    conn.close()
 
 # --- SCRAPER ---
 def fetch_shift_codes():
@@ -84,11 +126,11 @@ async def send_discord_messages(codes_to_post, codes_to_delete, posted_codes):
         channel = client.get_channel(CHANNEL_ID)
 
         # Delete expired messages
-        for code, msg_id in codes_to_delete.items():
+        for code, info in codes_to_delete.items():
             try:
-                msg = await channel.fetch_message(msg_id)
+                msg = await channel.fetch_message(info["msg_id"])
                 await msg.delete()
-                posted_codes.pop(code, None)
+                delete_posted_code(code)
             except:
                 pass
 
@@ -100,14 +142,14 @@ async def send_discord_messages(codes_to_post, codes_to_delete, posted_codes):
                 f"{EMOJI_EXPIRES} Expires: {code_entry['expires_raw']}"
             )
             sent_msg = await channel.send(message)
-            posted_codes[code_entry["code"]] = {
-                "msg_id": sent_msg.id,
-                "expires_raw": code_entry["expires_raw"],
-                "expires": str(code_entry["expires"])
-            }
+            save_posted_code(
+                code_entry["code"],
+                code_entry["reward"],
+                code_entry["expires"],
+                code_entry["expires_raw"],
+                sent_msg.id
+            )
 
-        # Persist posted codes
-        save_posted_codes(posted_codes)
         await client.close()
 
     await client.start(DISCORD_TOKEN)
@@ -119,9 +161,9 @@ if __name__ == "__main__":
 
     # Determine expired codes to delete
     codes_to_delete = {
-        code: info["msg_id"]
+        code: info
         for code, info in posted_codes.items()
-        if info.get("expires") and datetime.strptime(info["expires"], "%Y-%m-%d").date() < datetime.today().date()
+        if info.get("expires") and info["expires"] < datetime.today().date()
     }
 
     # Determine new codes to post
