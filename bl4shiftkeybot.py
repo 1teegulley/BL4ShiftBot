@@ -82,13 +82,18 @@ def fetch_shift_codes():
     for row in table_rows:
         code_elem = row.find("code")
         tds = row.find_all("td")
-        reward_elem = row.find("strong")
         date_elem = tds[1] if len(tds) > 1 else None
 
         if code_elem:
             code_text = code_elem.text.strip()
             expiration_text = date_elem.text.strip() if date_elem else "Unknown"
-            reward = reward_elem.text.strip() if reward_elem else "Shift Code"
+
+            # ✅ FIX: grab all text from the reward column (<td>)
+            reward_td = tds[0] if len(tds) > 0 else None
+            if reward_td:
+                reward = " ".join(reward_td.stripped_strings)  # combines "Break Free" + "Cosmetic Pack"
+            else:
+                reward = "Shift Code"
 
             # Parse expiration date
             try:
@@ -138,7 +143,7 @@ async def send_discord_messages(codes_to_post, codes_to_delete, posted_codes):
                 f"{EMOJI_REWARD} **{code_entry['reward']}**\n"
                 f"{EMOJI_CODE} `{code_entry['code']}`\n"
                 f"{EMOJI_EXPIRES} Expires: {code_entry['expires_raw']}\n"
-                f"\u200b"  # extra line at the end for spacing
+                f"\u200b"  # invisible character line for spacing
             )
             sent_msg = await channel.send(message)
             save_posted_code(
