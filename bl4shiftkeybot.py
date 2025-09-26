@@ -1,41 +1,44 @@
 import os
+import json
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 import discord
 import asyncio
+import subprocess
+import shlex
 
 # --- CONFIG ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 SHIFT_CODE_URL = "https://mentalmars.com/game-news/borderlands-4-shift-codes/"
+KV_ENV_VAR = "POSTED_CODES"
+RAILWAY_PROJECT_ID = os.getenv("RAILWAY_PROJECT_ID")  # Must be set in Railway env
+RAILWAY_TOKEN = os.getenv("RAILWAY_TOKEN")            # Must be set in Railway env
 
 # --- EMOJIS ---
 EMOJI_REWARD = "🎁"
 EMOJI_CODE = "🔑"
 EMOJI_EXPIRES = "⏰"
 
-# --- RAILWAY KV SETUP ---
-import requests as kv_requests
+# --- KV FUNCTIONS ---
+def load_posted_codes():
+    data = os.getenv(KV_ENV_VAR, "{}")
+    try:
+        return json.loads(data)
+    except:
+        return {}
 
-KV_API_URL = "https://kv.railway.app/api/v1/key"
-KV_PROJECT = os.getenv("RAILWAY_PROJECT_ID")  # your Railway project ID
-KV_TOKEN = os.getenv("RAILWAY_TOKEN")        # Railway token with KV access
-KV_KEY = "posted_codes"                      # single key to store all posted codes
+def save_posted_codes(posted_codes):
+    """Automatically update Railway environment variable"""
+    json_data = json.dumps(posted_codes)
+    cmd = f'railway env set {KV_ENV_VAR} "{json_data}" --project {RAILWAY_PROJECT_ID}'
+    # Run Railway CLI with token from environment
+    env = os.environ.copy()
+    env["RAILWAY_TOKEN"] = RAILWAY_TOKEN
+    subprocess.run(shlex.split(cmd), env=env)
 
-def get_posted_codes():
-    headers = {"Authorization": f"Bearer {KV_TOKEN}"}
-    resp = kv_requests.get(f"{KV_API_URL}/{KV_PROJECT}/{KV_KEY}", headers=headers)
-    if resp.status_code == 200:
-        return resp.json()
-    return {}
-
-def save_posted_codes(data):
-    headers = {"Authorization": f"Bearer {KV_TOKEN}", "Content-Type": "application/json"}
-    kv_requests.put(f"{KV_API_URL}/{KV_PROJECT}/{KV_KEY}", headers=headers, json=data)
-
-# --- FUNCTIONS ---
-
+# --- SCRAPER ---
 def fetch_shift_codes():
     resp = requests.get(SHIFT_CODE_URL)
     resp.raise_for_status()
@@ -68,9 +71,10 @@ def fetch_shift_codes():
 
 def is_code_expired(code_entry):
     if code_entry["expires"] is None:
-        return False  # Treat "Unknown" as valid
+        return False
     return code_entry["expires"] < datetime.today().date()
 
+# --- DISCORD FUNCTIONS ---
 async def send_discord_messages(codes_to_post, codes_to_delete, posted_codes):
     intents = discord.Intents.default()
     client = discord.Client(intents=intents)
@@ -96,30 +100,35 @@ async def send_discord_messages(codes_to_post, codes_to_delete, posted_codes):
                 f"{EMOJI_EXPIRES} Expires: {code_entry['expires_raw']}"
             )
             sent_msg = await channel.send(message)
-            posted_codes[code_entry["code"]] = {"msg_id": sent_msg.id, "expires_raw": code_entry["expires_raw"], "expires": str(code_entry["expires"])}
+            posted_codes[code_entry["code"]] = {
+                "msg_id": sent_msg.id,
+                "expires_raw": code_entry["expires_raw"],
+                "expires": str(code_entry["expires"])
+            }
 
-        # Save updated codes to KV
+        # Persist posted codes
         save_posted_codes(posted_codes)
-
         await client.close()
 
     await client.start(DISCORD_TOKEN)
 
-# --- MAIN LOGIC ---
-
+# --- MAIN ---
 if __name__ == "__main__":
-    posted_codes = get_posted_codes()
+    posted_codes = load_posted_codes()
     current_codes = fetch_shift_codes()
 
-    # Expired codes to delete
-    codes_to_delete = {code: entry["msg_id"] for code, entry in posted_codes.items() if entry.get("expires") and datetime.strptime(entry["expires"], "%Y-%m-%d").date() < datetime.today().date()}
+    # Determine expired codes to delete
+    codes_to_delete = {
+        code: info["msg_id"]
+        for code, info in posted_codes.items()
+        if info.get("expires") and datetime.strptime(info["expires"], "%Y-%m-%d").date() < datetime.today().date()
+    }
 
     # Determine new codes to post
-    codes_to_post = []
-    for code_entry in current_codes:
-        code_text = code_entry["code"]
-        if not is_code_expired(code_entry) and code_text not in posted_codes:
-            codes_to_post.append(code_entry)
+    codes_to_post = [
+        c for c in current_codes
+        if not is_code_expired(c) and c["code"] not in posted_codes
+    ]
 
     # Run Discord posting
     asyncio.run(send_discord_messages(codes_to_post, codes_to_delete, posted_codes))
