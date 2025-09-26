@@ -138,16 +138,9 @@ async def post_all_codes(channel):
 # --- Main (cron-friendly) ---
 async def main():
     intents = discord.Intents.default()
-    client = discord.Client(intents=intents)
-    await client.login(DISCORD_TOKEN)
-    channel = client.get_channel(CHANNEL_ID)
-    if not channel:
-        print("Channel not found")
-        await client.close()
-        return
-
-    await post_all_codes(channel)
-    await client.close()
+    async with discord.Client(intents=intents) as client:
+        channel = await client.fetch_channel(CHANNEL_ID)
+        await post_all_codes(channel)
 
 if __name__ == "__main__":
     asyncio.run(main())
