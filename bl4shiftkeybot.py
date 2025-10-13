@@ -127,11 +127,11 @@ def fetch_shift_codes():
 # --- EXPIRATION CHECK ---
 def is_code_expired(entry):
     if entry["expires"]:
-        return entry["expires"] < datetime.today().date()
+        return entry["expires"] <= datetime.today().date()
     else:
         try:
             parsed_date = parser.parse(entry["expires_raw"]).date()
-            return parsed_date < datetime.today().date()
+            return parsed_date <= datetime.today().date()
         except Exception:
             return False
 
