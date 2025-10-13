@@ -17,7 +17,7 @@ SHIFT_CODE_URL = "https://mentalmars.com/game-news/borderlands-4-shift-codes/"
 EMOJI_REWARD = "🎁"
 EMOJI_CODE = "🔑"
 EMOJI_EXPIRES = "⏰"
-EMOJI_CATEGORY = "📦"
+# EMOJI_CATEGORY = "📦" --Category coded in, not needed
 
 # --- DATABASE FUNCTIONS ---
 def get_db_connection():
@@ -84,8 +84,8 @@ def fetch_shift_codes():
 
     for table in tables:
         # Get section title (category) before the table
-        category_header = table.find_previous(["h2", "h3"])
-        category = category_header.get_text(strip=True) if category_header else "Unknown"
+        #category_header = table.find_previous(["h2", "h3"]) --Category coded in, not needed
+        #category = category_header.get_text(strip=True) if category_header else "Unknown" --Category coded in, not needed
 
         rows = table.find_all("tr")
         for row in rows:
@@ -115,7 +115,7 @@ def fetch_shift_codes():
                 expiration_date = None
 
             codes.append({
-                "category": category,
+                #"category": category, --Category coded in, not needed
                 "code": code_text,
                 "reward": reward,
                 "expires": expiration_date,
@@ -155,9 +155,9 @@ async def send_discord_messages(codes_to_post, codes_to_delete, posted_codes):
 
         # Post new codes
         for code_entry in codes_to_post:
-            category = code_entry.get("category", "Unknown")
+            #category = code_entry.get("category", "Unknown") --Category coded in, not needed
             message = (
-                f"{EMOJI_CATEGORY} **{category}**\n"
+                #f"{EMOJI_CATEGORY} **{category}**\n" --Category coded in, not needed
                 f"{EMOJI_REWARD} **{code_entry['reward']}**\n"
                 f"{EMOJI_CODE} `{code_entry['code']}`\n"
                 f"{EMOJI_EXPIRES} Expires: {code_entry['expires_raw']}\n"
