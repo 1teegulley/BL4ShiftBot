@@ -1,182 +1,125 @@
-# --- 1.0 Release? ---
-
 import os
-from datetime import datetime
+import asyncio
+import discord
 import requests
 from bs4 import BeautifulSoup
-import discord
-import asyncio
-import psycopg2
-import psycopg2.extras
-from dateutil import parser
+from datetime import datetime
+from discord.ext import tasks
 
-# --- CONFIG ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-SHIFT_CODE_URL = "https://mentalmars.com/game-news/borderlands-4-shift-codes/"
+CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
 
-# --- EMOJIS ---
-EMOJI_REWARD = "🎁"
-EMOJI_CODE = "🔑"
-EMOJI_EXPIRES = "⏰"
+intents = discord.Intents.default()
+client = discord.Client(intents=intents)
 
-# --- DATABASE FUNCTIONS ---
-def get_db_connection():
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        raise Exception("DATABASE_URL not set in environment")
-    return psycopg2.connect(database_url, cursor_factory=psycopg2.extras.RealDictCursor)
+# =============== SCRAPER =====================
 
-def load_posted_codes():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS posted_codes (
-            code TEXT PRIMARY KEY,
-            reward TEXT,
-            expires DATE,
-            expires_raw TEXT,
-            msg_id BIGINT
-        )
-    """)
-    conn.commit()
+def scrape_shift_codes():
+    url = "https://mentalmars.com/game-news/borderlands-4-shift-codes/"
+    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
 
-    cur.execute("SELECT code, reward, expires, expires_raw, msg_id FROM posted_codes")
-    rows = cur.fetchall()
-    posted = {}
-    for row in rows:
-        posted[row["code"]] = row
-    cur.close()
-    conn.close()
-    return posted
-
-def save_posted_code(code, reward, expires, expires_raw, msg_id):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO posted_codes (code, reward, expires, expires_raw, msg_id)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (code) DO UPDATE SET
-            reward = EXCLUDED.reward,
-            expires = EXCLUDED.expires,
-            expires_raw = EXCLUDED.expires_raw,
-            msg_id = EXCLUDED.msg_id
-    """, (code, reward, expires, expires_raw, msg_id))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-def delete_posted_code(code):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM posted_codes WHERE code = %s", (code,))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-# --- SCRAPER ---
-def fetch_shift_codes():
-    resp = requests.get(SHIFT_CODE_URL)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-    table_rows = soup.find_all("tr")
     codes = []
-    for row in table_rows:
-        code_elem = row.find("code")
-        tds = row.find_all("td")
-        date_elem = tds[1] if len(tds) > 1 else None
+    tables = soup.find_all("figure", class_="wp-block-table")
 
-        if code_elem:
-            code_text = code_elem.text.strip()
-            expiration_text = date_elem.text.strip() if date_elem else "Unknown"
+    for table in tables:
+        # Get category (header text before the table)
+        category = "Unknown"
+        prev = table.find_previous(["h2", "h3"])
+        if prev and prev.get_text(strip=True):
+            category = prev.get_text(strip=True)
 
-            # ✅ FIX: grab all text from the reward column (<td>)
-            reward_td = tds[0] if len(tds) > 0 else None
-            if reward_td:
-                reward = " ".join(reward_td.stripped_strings)  # combines "Break Free" + "Cosmetic Pack"
-            else:
-                reward = "Shift Code"
+        rows = table.find("tbody").find_all("tr")
+        for row in rows:
+            cols = row.find_all("td")
+            if len(cols) < 4:
+                continue
 
-            # Parse expiration date
-            try:
-                expiration_date = parser.parse(expiration_text).date()
-            except:
-                expiration_date = None
+            reward = cols[0].get_text(strip=True)
+            added = cols[1].get_text(strip=True)
+            code = cols[2].find("code").get_text(strip=True) if cols[2].find("code") else cols[2].get_text(strip=True)
+            expires_raw = cols[3].get_text(strip=True)
+
+            # Normalize expiration date
+            expires = None
+            if expires_raw and expires_raw != "???":
+                try:
+                    expires = datetime.strptime(expires_raw, "%b %d, %Y").date().isoformat()
+                except ValueError:
+                    expires = None
 
             codes.append({
-                "code": code_text,
+                "category": category,
                 "reward": reward,
-                "expires": expiration_date,
-                "expires_raw": expiration_text
+                "added": added,
+                "code": code,
+                "expires_raw": expires_raw,
+                "expires": expires,
             })
+
     return codes
 
-def is_code_expired(entry):
-    if entry["expires"]:
-        return entry["expires"] < datetime.today().date()
-    else:
-        try:
-            parsed_date = parser.parse(entry["expires_raw"]).date()
-            return parsed_date < datetime.today().date()
-        except:
-            return False
+# =============== DISCORD POST LOGIC =====================
 
-# --- DISCORD FUNCTIONS ---
-async def send_discord_messages(codes_to_post, codes_to_delete, posted_codes):
-    intents = discord.Intents.default()
-    client = discord.Client(intents=intents)
+async def post_shift_codes():
+    channel = client.get_channel(CHANNEL_ID)
+    if not channel:
+        print("❌ Channel not found. Check DISCORD_CHANNEL_ID.")
+        return
 
-    @client.event
-    async def on_ready():
-        channel = client.get_channel(CHANNEL_ID)
+    codes = scrape_shift_codes()
+    if not codes:
+        await channel.send("⚠️ No SHiFT codes found on the site.")
+        return
 
-        # Delete expired messages
-        for code, info in codes_to_delete.items():
-            try:
-                msg = await channel.fetch_message(info["msg_id"])
-                await msg.delete()
-                delete_posted_code(code)
-            except:
-                pass
+    # Group by category
+    grouped = {}
+    for c in codes:
+        grouped.setdefault(c["category"], []).append(c)
 
-        # Post new codes
-        for code_entry in codes_to_post:
-            message = (
-                f"{EMOJI_REWARD} **{code_entry['reward']}**\n"
-                f"{EMOJI_CODE} `{code_entry['code']}`\n"
-                f"{EMOJI_EXPIRES} Expires: {code_entry['expires_raw']}\n"
-                f"\u200b"  # invisible character line for spacing
-            )
-            sent_msg = await channel.send(message)
-            save_posted_code(
-                code_entry["code"],
-                code_entry["reward"],
-                code_entry["expires"],
-                code_entry["expires_raw"],
-                sent_msg.id
+    for category, items in grouped.items():
+        message_lines = [f"**{category}**\n"]
+        for item in items:
+            reward_text = item["reward"]
+            code_text = item["code"]
+            expires_text = item["expires_raw"]
+
+            # Message formatting
+            message_lines.append(
+                f"🎁 **Reward:** {reward_text}\n"
+                f"🔑 **Code:** `{code_text}`\n"
+                f"⏰ **Expires:** {expires_text}\n"
             )
 
-        await client.close()
+        message_lines.append("\n—\n💡 Redeem at https://shift.gearboxsoftware.com/rewards\n")
+        full_message = "\n".join(message_lines)
 
+        # Discord message size limit safeguard
+        if len(full_message) > 1900:
+            chunks = [full_message[i:i+1900] for i in range(0, len(full_message), 1900)]
+            for chunk in chunks:
+                await channel.send(chunk)
+        else:
+            await channel.send(full_message)
+
+# =============== CRON / BACKGROUND JOB =====================
+
+@tasks.loop(hours=6)
+async def scheduled_check():
+    print("🔁 Running scheduled SHiFT code check...")
+    await post_shift_codes()
+
+@client.event
+async def on_ready():
+    print(f"✅ Logged in as {client.user}")
+    if not scheduled_check.is_running():
+        scheduled_check.start()
+
+# =============== ENTRY POINT =====================
+
+async def main():
     await client.start(DISCORD_TOKEN)
 
-# --- MAIN ---
 if __name__ == "__main__":
-    posted_codes = load_posted_codes()
-    current_codes = fetch_shift_codes()
-
-    # Determine expired codes to delete
-    codes_to_delete = {
-        code: info
-        for code, info in posted_codes.items()
-        if is_code_expired(info)
-    }
-
-    # Determine new codes to post
-    codes_to_post = [
-        c for c in current_codes
-        if not is_code_expired(c) and c["code"] not in posted_codes
-    ]
-
-    # Run Discord posting
-    asyncio.run(send_discord_messages(codes_to_post, codes_to_delete, posted_codes))
+    asyncio.run(main())
